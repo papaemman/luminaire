@@ -1,0 +1,123 @@
+version: 2.1
+
+orbs:
+  sixrs-gke: sixriversystems/sixrs-gke@2
+  gcp-cli: circleci/gcp-cli@2.4.0
+
+jobs:
+  test:
+    parameters:
+      slack_status_on_fail_only:
+        type: boolean
+        default: true
+    working_directory: ~/luminaire
+    docker:
+      - image: google/cloud-sdk:264.0.0-slim
+    steps:
+      - sixrs-gke/notify:
+          channel: "#eng_sw_data_platform_automation"
+          message: 'Starting \`luminaire\` testing.'
+      - checkout
+      # - run:
+      #   name: test
+      #   command: pytest ---
+      - sixrs-gke/status:
+          channel: "#eng_sw_data_platform_automation"
+          fail_only: << parameters.slack_status_on_fail_only >>
+
+  deploy:
+    parameters:
+      target_environment:
+        type: string
+      gcs_bucket:
+        type: env_var_name
+      slack_status_on_fail_only:
+        type: boolean
+        default: true
+    working_directory: ~/luminaire
+    docker:
+      - image: google/cloud-sdk:264.0.0-slim
+    steps:
+      - sixrs-gke/notify:
+          channel: "#eng_sw_data_platform_automation"
+          message: 'Starting \`luminaire\` deploy to \`<< parameters.target_environment >>\`'
+      - checkout
+      - run:
+          name: sync_to_bucket
+          command: |
+            echo "${CLIENT_SECRET}" | base64 -d > /tmp/client-secret.json
+            gcloud auth activate-service-account --key-file /tmp/client-secret.json
+            touch __init__.py
+            gsutil cp __init__.py gs://${<< parameters.gcs_bucket >>}/dags/modules/
+            gsutil -m rsync -r -d luminaire/ gs://${<< parameters.gcs_bucket >>}/dags/modules/luminaire/
+      - sixrs-gke/status:
+          channel: "#eng_sw_data_platform_automation"
+          fail_only: << parameters.slack_status_on_fail_only >>
+
+  slack_approval_notification:
+    docker:
+      - image: cibuilds/base:latest
+    steps:
+      - run:
+          command: |
+            echo 'export SHORT_SHA1=$(echo $CIRCLE_SHA1 | cut -c -7)' >> $BASH_ENV
+          name: Setting SHORT_SHA1
+      - sixrs-gke/approval:
+          channel: "#eng_sw_data_platform_automation"
+          message: 'Deploy to \`production\` awaiting approval ($SHORT_SHA1 merged by $CIRCLE_USERNAME)'
+
+workflows:
+  main:
+    jobs:
+      #- test:
+      #    name: test
+      #    context: 6rs-circle
+      - deploy:
+          name: deploy_to_dev
+          target_environment: dev
+          gcs_bucket: DEV_COMPOSER_GCS_BUCKET
+          context:
+            - 6rs-circle
+          #requires:
+          #  - test
+      - deploy:
+          name: deploy_to_stg
+          target_environment: stg
+          gcs_bucket: STG_COMPOSER_GCS_BUCKET
+          context:
+            - 6rs-circle
+          #requires:
+          #  - test
+          filters:
+            branches:
+              only:
+                - main
+      - slack_approval_notification:
+          context: 6rs-circle
+          requires:
+            - deploy_to_stg
+          filters:
+            branches:
+              only:
+                - main
+      - prod_deploy_approval:
+          type: approval
+          context: 6rs-circle
+          filters:
+            branches:
+              only:
+                - main
+          requires:
+            - deploy_to_stg
+      - deploy:
+          name: prd_deploy
+          target_environment: prd
+          gcs_bucket: PRD_COMPOSER_GCS_BUCKET
+          context:
+            - 6rs-circle
+          requires:
+            - prod_deploy_approval
+          filters:
+            branches:
+              only:
+                - main
