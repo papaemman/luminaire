@@ -49,7 +49,7 @@ jobs:
             gcloud auth activate-service-account --key-file /tmp/client-secret.json
             touch __init__.py
             echo "import sys" >> __init__.py
-            echo "sys.path.append("/home/airflow/gcs/dags/modules")" >> __init__.py
+            echo "sys.path.append('/home/airflow/gcs/dags/modules')" >> __init__.py
             gsutil cp __init__.py gs://${<< parameters.gcs_bucket >>}/dags/modules/
             gsutil -m rsync -r -d luminaire/ gs://${<< parameters.gcs_bucket >>}/dags/modules/luminaire/
       - sixrs-gke/status:
